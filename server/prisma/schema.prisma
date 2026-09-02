@@ -1,0 +1,315 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  extensions = [pgvector(map: "vector")]
+}
+
+// ------------------------------------------------------
+// Users & Authentication
+// ------------------------------------------------------
+
+enum GlobalRole {
+  SUPER_ADMIN
+  USER
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  globalRole   GlobalRole @default(USER)
+  avatarUrl    String?
+  isVerified   Boolean  @default(false)
+  refreshToken String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  organizationsOwned Organization[] @relation("OrgOwner")
+  workspacesOwned    Workspace[]    @relation("WorkspaceOwner")
+  projectsOwned      Project[]      @relation("ProjectOwner")
+  orgMemberships     OrgMember[]
+  workspaceMembers   WorkspaceMember[]
+  projectMembers     ProjectMember[]
+  tasksAssigned      Task[]         @relation("TaskAssignee")
+  activities         Activity[]
+  auditLogs          AuditLog[]
+}
+
+// ------------------------------------------------------
+// Organizations & Workspaces
+// ------------------------------------------------------
+
+enum OrgRole {
+  ORG_ADMIN
+  MEMBER
+  VIEWER
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  ownerId   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner     User        @relation("OrgOwner", fields: [ownerId], references: [id])
+  members   OrgMember[]
+  workspaces Workspace[]
+}
+
+model OrgMember {
+  id             String       @id @default(uuid())
+  organizationId String
+  userId         String
+  role           OrgRole      @default(MEMBER)
+  joinedAt       DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  user           User         @relation(fields: [userId], references: [id])
+
+  @@unique([organizationId, userId])
+}
+
+enum WorkspaceRole {
+  WORKSPACE_ADMIN
+  MEMBER
+  VIEWER
+}
+
+model Workspace {
+  id             String   @id @default(uuid())
+  name           String
+  slug           String
+  organizationId String
+  ownerId        String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization      @relation(fields: [organizationId], references: [id])
+  owner          User              @relation("WorkspaceOwner", fields: [ownerId], references: [id])
+  members        WorkspaceMember[]
+  projects       Project[]
+
+  @@unique([slug, organizationId])
+}
+
+model WorkspaceMember {
+  id          String        @id @default(uuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole @default(MEMBER)
+  joinedAt    DateTime      @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  user        User      @relation(fields: [userId], references: [id])
+
+  @@unique([workspaceId, userId])
+}
+
+// ------------------------------------------------------
+// Projects
+// ------------------------------------------------------
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  ARCHIVED
+}
+
+enum ProjectPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum ProjectRole {
+  PROJECT_MANAGER
+  CONTRIBUTOR
+  VIEWER
+}
+
+model Project {
+  id          String          @id @default(uuid())
+  title       String
+  key         String
+  description String?         @db.Text
+  status      ProjectStatus   @default(ACTIVE)
+  priority    ProjectPriority @default(MEDIUM)
+  workspaceId String
+  ownerId     String
+  tags        String[]
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  workspace   Workspace       @relation(fields: [workspaceId], references: [id])
+  owner       User            @relation("ProjectOwner", fields: [ownerId], references: [id])
+  members     ProjectMember[]
+  tasks       Task[]
+  sprints     Sprint[]
+  activities  Activity[]
+  risks       Risk[]
+  documents   Document[]
+  memories    ProjectMemory[]
+
+  @@unique([key, workspaceId])
+}
+
+model ProjectMember {
+  id        String      @id @default(uuid())
+  projectId String
+  userId    String
+  role      ProjectRole @default(CONTRIBUTOR)
+  joinedAt  DateTime    @default(now())
+
+  project   Project @relation(fields: [projectId], references: [id])
+  user      User    @relation(fields: [userId], references: [id])
+
+  @@unique([projectId, userId])
+}
+
+// ------------------------------------------------------
+// Tasks & Sprints
+// ------------------------------------------------------
+
+enum TaskStatus {
+  BACKLOG
+  TODO
+  IN_PROGRESS
+  REVIEW
+  DONE
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Sprint {
+  id        String   @id @default(uuid())
+  name      String
+  goal      String?
+  startDate DateTime
+  endDate   DateTime
+  projectId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project   Project @relation(fields: [projectId], references: [id])
+  tasks     Task[]
+}
+
+model Task {
+  id              String       @id @default(uuid())
+  title           String
+  description     String?      @db.Text
+  status          TaskStatus   @default(TODO)
+  priority        TaskPriority @default(MEDIUM)
+  points          Int?
+  order           Float        @default(0)
+  projectId       String
+  sprintId        String?
+  assigneeId      String?
+  parentTaskId    String?
+  githubIssueUrl  String?
+  githubCommitSha String?
+  aiMetadata      Json?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  project         Project @relation(fields: [projectId], references: [id])
+  sprint          Sprint? @relation(fields: [sprintId], references: [id])
+  assignee        User?   @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  parentTask      Task?   @relation("SubTasks", fields: [parentTaskId], references: [id])
+  subTasks        Task[]  @relation("SubTasks")
+}
+
+// ------------------------------------------------------
+// AI Intelligence & RAG
+// ------------------------------------------------------
+
+model Document {
+  id        String   @id @default(uuid())
+  title     String
+  content   String   @db.Text
+  type      String   // PDF, DOCX, TXT, MD
+  projectId String
+  // This uses pgvector for RAG
+  embedding Unsupported("vector(1536)")?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project   Project @relation(fields: [projectId], references: [id])
+}
+
+model ProjectMemory {
+  id        String   @id @default(uuid())
+  key       String
+  content   String   @db.Text
+  type      String   // DECISION, REQUIREMENT, MEETING_SUMMARY
+  projectId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project   Project @relation(fields: [projectId], references: [id])
+}
+
+model Risk {
+  id             String   @id @default(uuid())
+  title          String
+  description    String   @db.Text
+  severity       String   // HIGH, MEDIUM, LOW
+  score          Float
+  projectId      String
+  affectedTasks  String[] // Array of Task IDs
+  recommendedFix String?  @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  project   Project @relation(fields: [projectId], references: [id])
+}
+
+// ------------------------------------------------------
+// Audit & Activity Logs
+// ------------------------------------------------------
+
+model Activity {
+  id          String   @id @default(uuid())
+  type        String
+  description String
+  entityId    String
+  entityType  String
+  projectId   String
+  userId      String?
+  createdAt   DateTime @default(now())
+
+  project     Project @relation(fields: [projectId], references: [id])
+  user        User?   @relation(fields: [userId], references: [id])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  action    String
+  resource  String
+  projectId String?
+  userId    String
+  metadata  Json?
+  timestamp DateTime @default(now())
+
+  user      User @relation(fields: [userId], references: [id])
+}
